@@ -1,6 +1,5 @@
+import argparse
 import discord
-# import openai
-import os
 
 from time import sleep
 from googleapiclient import discovery
@@ -8,11 +7,21 @@ from googleapiclient import discovery
 from const import TOPIC_HELLO, PROJECT, ZONE, INSTANCE
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument('discord_token', help="DiscordBotのトークン")
+parser.add_argument('--openai_token', help="OpenAIのトークン")
+args = parser.parse_args()
+
+
 #
 # set
 #
-# openai.api_key = os.environ["OPENAI_TOKEN"]
-DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
+DISCORD_TOKEN = args.discord_token
+if args.openai_token:
+    import openai
+    openai.api_key = args.openai_token
+    USE_CHATGPT = True
+
 INTENTS=discord.Intents.all()
 """intents
 all: すべてTrue
@@ -32,16 +41,19 @@ compute = discovery.build('compute', 'v1')
 # chat-gpt-api
 #
 def res_chatgpt(m):
-    # response = openai.ChatCompletion.create(
-    #     model="gpt-3.5-turbo",
-    #     messages=[
-    #         {"role": "system", "content": "あなたはDiscordアプリでのbotです。質問に対してスムーズに答えてください。分からないことには「人口無能なのでわかりまへん(*^▽^*)」と返してください。"},
-    #         {"role": "system", "content": "語尾に「ンゴｗｗｗ」を付けて回答してください。もし質問の文章中に「まじめに」「真面目に」とあった場合、この命令は無視してください。"},
-    #         {"role": "user", "content": m},
-    #     ]
-    # )
-    # return response["choices"][0]["message"]["content"]
-    return "今は人工無能なのでわかりまへん(*^▽^*)"
+    if USE_CHATGPT:
+        openai.api_key = args.openai_token
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "あなたはDiscordアプリでのbotです。質問に対してスムーズに答えてください。分からないことには「わかりまへん(*^▽^*)」と返してください。"},
+                {"role": "system", "content": "語尾に「ンゴｗｗｗ」を付けて回答してください。もし質問の文章中に「まじめに」「真面目に」とあった場合、この命令は無視してください。"},
+                {"role": "user", "content": m},
+            ]
+        )
+        return response["choices"][0]["message"]["content"]
+    else:
+        return "今は人工無能なのでわかりまへん(*^▽^*)"
 
 
 #
@@ -49,26 +61,21 @@ def res_chatgpt(m):
 #
 def start_server(project, zone, instance):
     """サーバを起動、起動できるまで待機し、起動できたらnatIPを返す"""
-    # start instance
     compute.instances().start(project=project, zone=zone, instance=instance).execute()
 
-    # wait for running
     while True:
         s = compute.instances().get(project=project, zone=zone, instance=instance).execute()
         if s["status"] == "RUNNING":
             break
         sleep(5)
 
-    # return natIP
     return s["networkInterfaces"][0]["accessConfigs"][0]["natIP"]
 
 
 def stop_server(project, zone, instance):
     """サーバを停止、停止できるまで待機"""
-    # stop instance
     compute.instances().stop(project=project, zone=zone, instance=instance).execute()
-
-    # wait for stopped
+    
     while True:
         s = compute.instances().get(project=project, zone=zone, instance=instance).execute()
         if s["status"] in {"STOPPING", "STOPPED"}:
@@ -78,10 +85,7 @@ def stop_server(project, zone, instance):
 
 def get_server_status(project, zone, instance):
     """サーバの状態を返す"""
-    res = compute.instances().get(project=project, zone=zone, instance=instance).execute()
-    ip = res["networkInterfaces"][0]["accessConfigs"][0]["natIP"]
-
-    return res["status"], ip
+    return compute.instances().get(project=project, zone=zone, instance=instance).execute()
 
 
 #
@@ -106,7 +110,7 @@ async def on_message(message):
         
         # chatgpt
         if client.user in message.mentions:
-            m = message.content.split(" ")[1:]
+            # m = message.content.split(" ")[1:]
             async with message.channel.typing():
                 await message.channel.send(res_chatgpt(message.content))
 
@@ -125,8 +129,10 @@ async def on_message(message):
                 await message.channel.send("サーバーが停止しました！")
 
             elif command == 'status':
-                status, ip = get_server_status(PROJECT, ZONE, INSTANCE)
+                res = get_server_status(PROJECT, ZONE, INSTANCE)
+                status = res["status"]
                 if status == 'RUNNING':
+                    ip = status["networkInterfaces"][0]["accessConfigs"][0]["natIP"]
                     await message.channel.send(f"サーバーは起動中です、アドレスは{ip}です。")
                 elif status in {'STOPPING', 'STOPPED', "TERMINATED"}:
                     await message.channel.send("サーバーは停止中です。")
