@@ -4,7 +4,7 @@ import discord
 from time import sleep
 from googleapiclient import discovery
 
-from const import TOPIC_HELLO, PROJECT, ZONE, INSTANCE
+from const import HELP, TOPIC_HELLO, PROJECT, ZONE, INSTANCE
 
 
 parser = argparse.ArgumentParser()
@@ -17,6 +17,7 @@ args = parser.parse_args()
 # set
 #
 DISCORD_TOKEN = args.discord_token
+USE_CHATGPT = False
 if args.openai_token:
     import openai
     openai.api_key = args.openai_token
@@ -59,6 +60,58 @@ def res_chatgpt(m):
 #
 # google cloud instance cmd
 #
+class MicraButton(discord.ui.View):
+    def __init__(self):
+        super().__init__()
+        self.responses = get_server_status(PROJECT, ZONE, INSTANCE)
+        self.status = self.responses["status"]
+
+    @discord.ui.button(label="Status", style=discord.ButtonStyle.primary)
+    async def status(self, interaction, button):
+        if self.status in ['PROVISIONING', 'STAGING']:
+            await interaction.response.send_message("サーバーを起動している最中です。")
+        elif self.status == 'RUNNING':
+            ip = self.responses["networkInterfaces"][0]["accessConfigs"][0]["natIP"]
+            await interaction.response.send_message(f"サーバーは起動中です！アドレスは{ip}です。")
+        elif self.status == 'STOPPING':
+            await interaction.response.send_message("サーバーを停止している最中です。")
+        elif self.status == 'TERMINATED':
+            await interaction.response.send_message("サーバーは停止中です。")
+        else:
+            await interaction.response.send_message(f"サーバーの状態を確認できません！時間おいてもう一度お試しください。(ステータス：{self.status})")
+
+    @discord.ui.button(label="Start", style=discord.ButtonStyle.green)
+    async def start(self, interaction, button):
+        if self.status in ['PROVISIONING', 'STAGING']:
+            await interaction.response.send_message(f"サーバーは既に起動しています、起動するまで少々お待ちください。")
+        elif self.status == 'RUNNING':
+            ip = self.responses["networkInterfaces"][0]["accessConfigs"][0]["natIP"]
+            await interaction.response.send_message(f"サーバーは既に起動しています！アドレスは{ip}です。")
+        elif self.status == 'STOPPING':
+            await interaction.response.send_message(f"サーバーを停止しています、停止完了後にもう一度お試しください。")
+        elif self.status == 'TERMINATED':
+            await interaction.response.send_message("サーバーを起動します、少々お待ちください...")
+            ip = start_server(PROJECT, ZONE, INSTANCE)
+            await interaction.response.send_message(f"サーバーが起動しました！アドレスは{ip}です。")
+        else:
+            await interaction.response.send_message(f"サーバーの状態を確認できません！時間おいてもう一度お試しください。(ステータス：{self.status})")
+
+    @discord.ui.button(label="Stop", style=discord.ButtonStyle.red)
+    async def stop(self, interaction, button):
+        if self.status in ['PROVISIONING', 'STAGING']:
+            await interaction.response.send_message(f"サーバーは起動中です、起動完了後にもう一度お試しください。")
+        elif self.status == 'RUNNING':
+            await interaction.response.send_message("サーバー停止中、少々お待ちください...")
+            stop_server(PROJECT, ZONE, INSTANCE)
+            await interaction.response.send_message("サーバーが停止しました！")
+        elif self.status == 'STOPPING':
+            await interaction.response.send_message(f"サーバーを停止しています、少々お待ちください。")
+        elif self.status == 'TERMINATED':
+            await interaction.response.send_message("サーバーは既に停止しています！")
+        else:
+            await interaction.response.send_message(f"サーバーの状態を確認できません！時間おいてもう一度お試しください。(ステータス：{self.status})")
+
+
 def start_server(project, zone, instance):
     """サーバを起動、起動できるまで待機し、起動できたらnatIPを返す"""
     compute.instances().start(project=project, zone=zone, instance=instance).execute()
@@ -102,42 +155,73 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    # message
     if not message.author.bot:
         # greeting
         if message.content in TOPIC_HELLO:
             await message.channel.send(f"こんにちは{message.author}さん！")
         
         # chatgpt
-        if client.user in message.mentions:
-            # m = message.content.split(" ")[1:]
+        elif client.user in message.mentions:
+            m = message.content.split(" ")[1:]
             async with message.channel.typing():
-                await message.channel.send(res_chatgpt(message.content))
+                await message.channel.send(res_chatgpt(m))
 
         # command: minecraft
         elif message.content.startswith('/micra'):
-            command = message.content.split(' ')[1]
-
-            if command == 'start':
-                await message.channel.send("サーバー起動中、少々お待ちください...")
-                ip = start_server(PROJECT, ZONE, INSTANCE)
-                await message.channel.send(f"サーバーが起動しました！アドレスは{ip}です。")
-
-            elif command == 'stop':
-                await message.channel.send("サーバー停止中、少々お待ちください...")
-                stop_server(PROJECT, ZONE, INSTANCE)
-                await message.channel.send("サーバーが停止しました！")
-
-            elif command == 'status':
+            message_list = message.content.split(' ')
+            if len(message_list) == 1:
+                """マイクラサーバー操作をボタンで表示"""
+                await message.channel.send("マイクラサーバー操作メニューだよ", view=MicraButton())
+            elif len(message_list) == 2:
+                """マイクラサーバー操作をコマンドで受け付ける"""
+                sub_command = message_list[1]
                 res = get_server_status(PROJECT, ZONE, INSTANCE)
                 status = res["status"]
-                if status == 'RUNNING':
-                    ip = status["networkInterfaces"][0]["accessConfigs"][0]["natIP"]
-                    await message.channel.send(f"サーバーは起動中です、アドレスは{ip}です。")
-                elif status in {'STOPPING', 'STOPPED', "TERMINATED"}:
-                    await message.channel.send("サーバーは停止中です。")
-                else:
-                    await message.channel.send(f"サーバーの状態を確認できません！時間おいてもう一度お試しください。(ステータス：{status})")
+                if sub_command == 'start':
+                    if status in ['PROVISIONING', 'STAGING']:
+                        await message.channel.send(f"サーバーは既に起動しています、起動するまで少々お待ちください。")
+                    elif status == 'RUNNING':
+                        ip = res["networkInterfaces"][0]["accessConfigs"][0]["natIP"]
+                        await message.channel.send(f"サーバーは既に起動しています！アドレスは{ip}です。")
+                    elif status == 'STOPPING':
+                        await message.channel.send(f"サーバーを停止しています、停止完了後にもう一度お試しください。")
+                    elif status == 'TERMINATED':
+                        await message.channel.send("サーバーを起動します、少々お待ちください...")
+                        ip = start_server(PROJECT, ZONE, INSTANCE)
+                        await message.channel.send(f"サーバーが起動しました！アドレスは{ip}です。")
+                    else:
+                        await message.channel.send(f"サーバーの状態を確認できません！時間おいてもう一度お試しください。(ステータス：{status})")
+                elif sub_command == 'stop':
+                    if status in ['PROVISIONING', 'STAGING']:
+                        await message.channel.send(f"サーバーは起動中です、起動完了後にもう一度お試しください。")
+                    elif status == 'RUNNING':
+                        await message.channel.send("サーバー停止中、少々お待ちください...")
+                        stop_server(PROJECT, ZONE, INSTANCE)
+                        await message.channel.send("サーバーが停止しました！")
+                    elif status == 'STOPPING':
+                        await message.channel.send(f"サーバーを停止しています、少々お待ちください。")
+                    elif status == 'TERMINATED':
+                        await message.channel.send("サーバーは既に停止しています！")
+                    else:
+                        await message.channel.send(f"サーバーの状態を確認できません！時間おいてもう一度お試しください。(ステータス：{status})")
+                elif sub_command == 'status':
+                    if status in ['PROVISIONING', 'STAGING']:
+                        await message.channel.send("サーバーを起動している最中です。")
+                    elif status == 'RUNNING':
+                        ip = status["networkInterfaces"][0]["accessConfigs"][0]["natIP"]
+                        await message.channel.send(f"サーバーは起動中です！アドレスは{ip}です。")
+                    elif status == 'STOPPING':
+                        await message.channel.send("サーバーを停止している最中です。")
+                    elif status == 'TERMINATED':
+                        await message.channel.send("サーバーは停止中です。")
+                    else:
+                        await message.channel.send(f"サーバーの状態を確認できません！時間おいてもう一度お試しください。(ステータス：{status})")
+            else:
+                await message.channel.send("コマンド引数が多いよ、使い方は`/help`見てね。")
+
+        # help
+        elif message.content.startswith('/help'):
+            await message.channel.send(HELP)
 
         # other
         else:
